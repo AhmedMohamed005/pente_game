@@ -14,7 +14,7 @@ class PenteGUI:
         self.margin = 20
         
         self.game = PenteGame()
-        self.ai = None
+        self.ai_players = {} # {WHITE: ai_instance, BLACK: ai_instance}
         self.game_over = False
         
         self._create_widgets()
@@ -49,6 +49,10 @@ class PenteGUI:
         self.depth_var = tk.IntVar(value=2)
         tk.Spinbox(control_frame, from_=1, to=3, textvariable=self.depth_var, width=5).grid(row=2, column=1, sticky="w")
         
+        # AI vs AI Checkbox
+        self.ai_vs_ai_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(control_frame, text="AI vs AI", variable=self.ai_vs_ai_var).grid(row=2, column=3, padx=10)
+
         # Buttons
         tk.Button(control_frame, text="New Game", command=self.start_game, bg="#4CAF50", fg="white").grid(row=2, column=2, padx=10)
         
@@ -70,17 +74,35 @@ class PenteGUI:
 
     def start_game(self):
         self.game = PenteGame()
-        self.ai = PenteAI(
+        self.game_over = False
+        self.ai_players = {}
+        
+        # Setup Black AI (Standard AI opponent)
+        self.ai_players[BLACK] = PenteAI(
             mode=self.mode_var.get(), 
             player_color=BLACK, 
             depth=self.depth_var.get()
         )
-        self.game_over = False
-        self._draw_board()
         
-        mode_str = self.mode_var.get().replace('_', ' + ').upper()
-        self.update_status(f"Started: {mode_str}. Your Turn (White)")
+        # Setup White AI (If AI vs AI mode is on)
+        if self.ai_vs_ai_var.get():
+            self.ai_players[WHITE] = PenteAI(
+                mode=self.mode_var.get(), 
+                player_color=WHITE, 
+                depth=self.depth_var.get()
+            )
+        else:
+            self.ai_players[WHITE] = None # Human player
+            
+        self._draw_board()
         self.update_captures()
+        
+        if self.ai_vs_ai_var.get():
+            self.update_status("AI vs AI Started...")
+            self.root.after(500, self.make_ai_move)
+        else:
+            mode_str = self.mode_var.get().replace('_', ' + ').upper()
+            self.update_status(f"Started: {mode_str}. Your Turn (White)")
 
     def _draw_board(self):
         self.canvas.delete("all")
@@ -121,47 +143,72 @@ class PenteGUI:
         self.canvas.create_oval(x-rad, y-rad, x+rad, y+rad, fill=color, outline=outline)
 
     def on_click(self, event):
-        if self.game_over or not self.ai:
+        if self.game_over:
+            return
+            
+        # Determine strict turn
+        current_player = WHITE if self.game.move_count % 2 == 0 else BLACK
+        
+        # If it's currently an AI's turn, ignore human clicks
+        if self.ai_players.get(current_player):
             return
             
         c = round((event.x - self.margin) / self.cell_size)
         r = round((event.y - self.margin) / self.cell_size)
         
-        if self.game.is_valid_move(r, c, WHITE):
-            if self.game.make_move(r, c, WHITE):
+        if self.game.is_valid_move(r, c, current_player):
+            if self.game.make_move(r, c, current_player):
                 self._draw_board()
                 self.update_captures()
                 
                 if self.game.winner:
-                    self.end_game("White Wins!")
+                    self.end_game(f"{'White' if current_player == WHITE else 'Black'} Wins!")
                     return
                 
-                self.update_status("AI Thinking...")
-                self.root.update()
-                self.root.after(50, self.make_ai_move)
+                # Check if next player is AI
+                next_player = 3 - current_player
+                if self.ai_players.get(next_player):
+                    self.update_status(f"AI ({'Black' if next_player == BLACK else 'White'}) Thinking...")
+                    self.root.update()
+                    self.root.after(50, self.make_ai_move)
 
     def make_ai_move(self):
+        if self.game_over:
+            return
+
+        current_player = WHITE if self.game.move_count % 2 == 0 else BLACK
+        ai = self.ai_players.get(current_player)
+        
+        if not ai:
+            return # Should not happen if logic is correct, or waiting for human
+            
         start = time.time()
-        move = self.ai.get_best_move(self.game)
+        move = ai.get_best_move(self.game)
         dur = time.time() - start
         
         if move:
             r, c = move
-            self.game.make_move(r, c, BLACK)
+            self.game.make_move(r, c, current_player)
             self._draw_board()
             self.update_captures()
             
-            info = (f"Time: {dur:.2f}s | "
-                    f"Nodes: {self.ai.nodes_explored} | "
-                    f"Pruned: {self.ai.pruned_branches} | "
-                    f"Mode: {self.ai.mode}")
+            p_name = "Black" if current_player == BLACK else "White"
+            info = (f"{p_name} AI | Time: {dur:.2f}s | "
+                    f"Nodes: {ai.nodes_explored} | "
+                    f"Pruned: {ai.pruned_branches}")
             self.info_label.config(text=info)
             
             if self.game.winner:
-                self.end_game("AI (Black) Wins!")
+                self.end_game(f"AI ({p_name}) Wins!")
                 return
                 
-            self.update_status("Your Turn (White)")
+            # If next player is also AI (AI vs AI), schedule next move
+            next_player = 3 - current_player
+            if self.ai_players.get(next_player):
+                self.update_status(f"AI ({'Black' if next_player == BLACK else 'White'}) Turn...")
+                self.root.after(500, self.make_ai_move)
+            else:
+                self.update_status("Your Turn (White)")
 
     def update_status(self, msg):
         self.status_label.config(text=msg)
